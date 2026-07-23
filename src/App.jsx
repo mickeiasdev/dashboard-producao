@@ -13,7 +13,7 @@ import { ptBR } from 'date-fns/locale';
 
 // --- FIREBASE IMPORTS ---
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
+import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut } from 'firebase/auth';
 import { getFirestore, doc, setDoc, deleteDoc, onSnapshot, collection } from 'firebase/firestore';
 
 // --- FIREBASE SETUP ---
@@ -27,6 +27,10 @@ const firebaseConfig = {
   measurementId: "G-7Y49MN3T26"
 };
 
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = "producao-esther";
 // Inicialização segura
 let app, auth, db;
 try {
@@ -239,472 +243,457 @@ export default function App() {
   const [editOpName, setEditOpName] = useState('');
   const [editOpGoal, setEditOpGoal] = useState('');
 
-  // 1. Firebase Auth Inicialização
-  useEffect(() => {
-    const initAuth = async () => {
+  export default function App() {
+    const [user, setUser] = useState(null);
+    const [authStep, setAuthStep] = useState('login');
+    const [authError, setAuthError] = useState('');
+
+    // 1. Firebase Auth: Login com Google
+    const handleGoogleLogin = async () => {
+      const provider = new GoogleAuthProvider();
       try {
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          await signInWithCustomToken(auth, __initial_auth_token);
-        } else {
-          await signInAnonymously(auth);
-        }
+        await signInWithPopup(auth, provider);
       } catch (error) {
-        console.error('Erro de autenticação no banco:', error);
+        console.error("Erro no login:", error);
+        setAuthError("Erro ao conectar com Google.");
       }
     };
-    initAuth();
-    const unsubscribe = onAuthStateChanged(auth, setUser);
-    return () => unsubscribe();
-  }, []);
 
-  // 2. Fetch Dados do Firestore em Tempo Real
-  useEffect(() => {
-    if (!user) return; // Aguarda usuário
-
-    const basePath = `artifacts/${appId}/users/${user.uid}`;
-
-    const unsubEmp = onSnapshot(collection(db, `${basePath}/employees`), (snap) => {
-      setEmployees(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    }, (err) => console.error(err));
-
-    const unsubOps = onSnapshot(collection(db, `${basePath}/operations`), (snap) => {
-      setOperations(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    }, (err) => console.error(err));
-
-    const unsubRecs = onSnapshot(collection(db, `${basePath}/records`), (snap) => {
-      setRecords(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    }, (err) => console.error(err));
-
-    const unsubLogs = onSnapshot(collection(db, `${basePath}/logs`), (snap) => {
-      const fetched = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      fetched.sort((a, b) => a.timestamp - b.timestamp); // Mais antigos primeiro
-      setLogs(fetched.map(l => l.message).slice(-150)); // Mantém últimos 150 no frontend
-    }, (err) => console.error(err));
-
-    return () => { unsubEmp(); unsubOps(); unsubRecs(); unsubLogs(); };
-  }, [user]);
-
-  // Autoselecionar primeiro funcionário quando a lista carregar
-  useEffect(() => {
-    if (employees.length > 0 && !selectedEmployeeId) {
-      setSelectedEmployeeId(employees[0].id);
-    } else if (employees.length === 0) {
-      setSelectedEmployeeId('');
-    }
-  }, [employees, selectedEmployeeId]);
-
-
-  const addLog = async (message) => {
-    if (!user) return;
-    const timestampDate = new Date();
-    const timestampStr = format(timestampDate, 'yyyy-MM-dd HH:mm:ss');
-    const fullMessage = `[${timestampStr}] ${message}`;
-
-    // Log ID (único)
-    const logId = Date.now().toString() + Math.random().toString(36).substr(2, 5);
-    await setDoc(doc(db, `artifacts/${appId}/users/${user.uid}/logs`, logId), {
-      message: fullMessage,
-      timestamp: timestampDate.getTime()
-    });
-  };
-
-  const handleDownloadLogs = () => {
-    const element = document.createElement("a");
-    const file = new Blob([logs.join('\n')], { type: 'text/plain' });
-    element.href = URL.createObjectURL(file);
-    element.download = `auditoria_producao_${format(new Date(), 'yyyyMMdd_HHmmss')}.txt`;
-    document.body.appendChild(element);
-    element.click();
-    document.body.removeChild(element);
-    addLog('Arquivo de logs TXT baixado pelo usuário.');
-  };
-
-  const handleAddEmployee = async (e) => {
-    e.preventDefault();
-    if (!newEmpName || !newEmpRole || !user) return;
-
-    const newId = Date.now().toString();
-    await setDoc(doc(db, `artifacts/${appId}/users/${user.uid}/employees`, newId), {
-      name: newEmpName,
-      role: newEmpRole
-    });
-
-    setNewEmpName('');
-    setNewEmpRole('');
-    setIsAddEmployeeOpen(false);
-    setSelectedEmployeeId(newId);
-    addLog(`Funcionário cadastrado: ${newEmpName} (Função: ${newEmpRole}, ID: ${newId})`);
-  };
-
-  const handleDeleteEmployee = async (id, name) => {
-    if (!user) return;
-    await deleteDoc(doc(db, `artifacts/${appId}/users/${user.uid}/employees`, id));
-    addLog(`Funcionário excluído do sistema: ${name} (ID: ${id})`);
-    setEmployeeToDelete(null);
-  };
-
-  const handleAddOperation = async (e) => {
-    e.preventDefault();
-    if (!newOpName || !newOpGoal || !user) return;
-
-    const newId = Date.now().toString();
-    await setDoc(doc(db, `artifacts/${appId}/users/${user.uid}/operations`, newId), {
-      name: newOpName,
-      dailyGoal: Number(newOpGoal)
-    });
-
-    setNewOpName('');
-    setNewOpGoal('');
-    addLog(`Operação criada: ${newOpName} (Meta: ${newOpGoal})`);
-  };
-
-  const handleDeleteOperation = async (id, name) => {
-    if (!user) return;
-    await deleteDoc(doc(db, `artifacts/${appId}/users/${user.uid}/operations`, id));
-    addLog(`Operação excluída: ${name} (ID: ${id})`);
-  };
-
-  const startEditingOperation = (op) => {
-    setEditingOpIdSettings(op.id);
-    setEditOpName(op.name);
-    setEditOpGoal(op.dailyGoal);
-  };
-
-  const handleSaveOperationEdit = async (id) => {
-    if (!user) return;
-    await setDoc(doc(db, `artifacts/${appId}/users/${user.uid}/operations`, id), {
-      name: editOpName,
-      dailyGoal: Number(editOpGoal)
-    }, { merge: true });
-
-    setEditingOpIdSettings(null);
-    addLog(`Operação alterada (ID: ${id}): Novo Nome '${editOpName}', Nova Meta '${editOpGoal}'`);
-  };
-
-  const handleUpdateRecord = async (date, operationId, quantity) => {
-    if (!user) return;
-    const qty = Number(quantity);
-
-    const empName = employees.find(e => e.id === selectedEmployeeId)?.name || selectedEmployeeId;
-    const opName = operations.find(o => o.id === operationId)?.name || operationId;
-
-    // ID Composto Único para evitar duplicidade no banco
-    const docId = `${selectedEmployeeId}_${date}_${operationId}`;
-    const docRef = doc(db, `artifacts/${appId}/users/${user.uid}/records`, docId);
-
-    if (qty === 0) {
-      await deleteDoc(docRef);
-      addLog(`Produção excluída: Func. '${empName}', Dia ${date}, Operação '${opName}'`);
-    } else {
-      const isEdit = records.some(r => r.id === docId);
-      const oldRecord = records.find(r => r.id === docId);
-
-      await setDoc(docRef, {
-        employeeId: selectedEmployeeId,
-        date,
-        operationId,
-        quantity: qty
+    // 2. Escuta de autenticação
+    useEffect(() => {
+      const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+        if (currentUser) {
+          setUser(currentUser);
+          setAuthStep('authenticated');
+        } else {
+          setUser(null);
+          setAuthStep('login');
+        }
       });
-
-      if (isEdit && oldRecord) {
-        addLog(`Produção alterada: Func. '${empName}', Dia ${date}, Operação '${opName}' (De: ${oldRecord.quantity} Para: ${qty})`);
-      } else {
-        addLog(`Produção lançada: Func. '${empName}', Dia ${date}, Operação '${opName}', Qtd: ${qty}`);
+      return () => unsubscribe();
+    }, []);
+    // Autoselecionar primeiro funcionário quando a lista carregar
+    useEffect(() => {
+      if (employees.length > 0 && !selectedEmployeeId) {
+        setSelectedEmployeeId(employees[0].id);
+      } else if (employees.length === 0) {
+        setSelectedEmployeeId('');
       }
-    }
-  };
+    }, [employees, selectedEmployeeId]);
 
 
-  const calendarData = useMemo(() => {
-    if (!selectedMonth || !selectedEmployeeId) return { weeks: [], monthAverage: 0, monthActiveDays: 0 };
+    const addLog = async (message) => {
+      if (!user) return;
+      const timestampDate = new Date();
+      const timestampStr = format(timestampDate, 'yyyy-MM-dd HH:mm:ss');
+      const fullMessage = `[${timestampStr}] ${message}`;
 
-    const monthDate = parseISO(`${selectedMonth}-01`);
-    const start = startOfMonth(monthDate);
-    const end = endOfMonth(monthDate);
+      // Log ID (único)
+      const logId = Date.now().toString() + Math.random().toString(36).substr(2, 5);
+      await setDoc(doc(db, `artifacts/${appId}/users/${user.uid}/logs`, logId), {
+        message: fullMessage,
+        timestamp: timestampDate.getTime()
+      });
+    };
 
-    const weeks = eachWeekOfInterval({ start, end }, { weekStartsOn: 1 }); // Monday start
+    const handleDownloadLogs = () => {
+      const element = document.createElement("a");
+      const file = new Blob([logs.join('\n')], { type: 'text/plain' });
+      element.href = URL.createObjectURL(file);
+      element.download = `auditoria_producao_${format(new Date(), 'yyyyMMdd_HHmmss')}.txt`;
+      document.body.appendChild(element);
+      element.click();
+      document.body.removeChild(element);
+      addLog('Arquivo de logs TXT baixado pelo usuário.');
+    };
 
-    const employeeRecords = records.filter(r => r.employeeId === selectedEmployeeId);
+    const handleAddEmployee = async (e) => {
+      e.preventDefault();
+      if (!newEmpName || !newEmpRole || !user) return;
 
-    let monthTotalPercentage = 0;
-    let monthActiveDaysCount = 0;
-
-    const weeksData = weeks.map(weekStart => {
-      const weekDays = eachDayOfInterval({
-        start: weekStart,
-        end: new Date(weekStart.getTime() + 6 * 24 * 60 * 60 * 1000)
+      const newId = Date.now().toString();
+      await setDoc(doc(db, `artifacts/${appId}/users/${user.uid}/employees`, newId), {
+        name: newEmpName,
+        role: newEmpRole
       });
 
-      let weekTotalPercentage = 0;
-      let weekActiveDaysCount = 0;
+      setNewEmpName('');
+      setNewEmpRole('');
+      setIsAddEmployeeOpen(false);
+      setSelectedEmployeeId(newId);
+      addLog(`Funcionário cadastrado: ${newEmpName} (Função: ${newEmpRole}, ID: ${newId})`);
+    };
 
-      const daysData = weekDays.map(day => {
-        const dateStr = format(day, 'yyyy-MM-dd');
-        const isCurrentMonth = isSameMonth(day, monthDate);
+    const handleDeleteEmployee = async (id, name) => {
+      if (!user) return;
+      await deleteDoc(doc(db, `artifacts/${appId}/users/${user.uid}/employees`, id));
+      addLog(`Funcionário excluído do sistema: ${name} (ID: ${id})`);
+      setEmployeeToDelete(null);
+    };
 
-        const dayRecords = employeeRecords.filter(r => r.date === dateStr);
+    const handleAddOperation = async (e) => {
+      e.preventDefault();
+      if (!newOpName || !newOpGoal || !user) return;
 
-        let totalPercentage = 0;
-        let operationsCount = 0;
+      const newId = Date.now().toString();
+      await setDoc(doc(db, `artifacts/${appId}/users/${user.uid}/operations`, newId), {
+        name: newOpName,
+        dailyGoal: Number(newOpGoal)
+      });
 
-        const dayOperationsData = operations.map(op => {
-          const record = dayRecords.find(r => r.operationId === op.id);
-          const qty = record ? record.quantity : 0;
-          const percentage = (qty / op.dailyGoal) * 100;
+      setNewOpName('');
+      setNewOpGoal('');
+      addLog(`Operação criada: ${newOpName} (Meta: ${newOpGoal})`);
+    };
 
-          if (qty > 0) {
-            totalPercentage += percentage;
-            operationsCount++;
-          }
+    const handleDeleteOperation = async (id, name) => {
+      if (!user) return;
+      await deleteDoc(doc(db, `artifacts/${appId}/users/${user.uid}/operations`, id));
+      addLog(`Operação excluída: ${name} (ID: ${id})`);
+    };
 
-          return { ...op, quantity: qty, percentage };
+    const startEditingOperation = (op) => {
+      setEditingOpIdSettings(op.id);
+      setEditOpName(op.name);
+      setEditOpGoal(op.dailyGoal);
+    };
+
+    const handleSaveOperationEdit = async (id) => {
+      if (!user) return;
+      await setDoc(doc(db, `artifacts/${appId}/users/${user.uid}/operations`, id), {
+        name: editOpName,
+        dailyGoal: Number(editOpGoal)
+      }, { merge: true });
+
+      setEditingOpIdSettings(null);
+      addLog(`Operação alterada (ID: ${id}): Novo Nome '${editOpName}', Nova Meta '${editOpGoal}'`);
+    };
+
+    const handleUpdateRecord = async (date, operationId, quantity) => {
+      if (!user) return;
+      const qty = Number(quantity);
+
+      const empName = employees.find(e => e.id === selectedEmployeeId)?.name || selectedEmployeeId;
+      const opName = operations.find(o => o.id === operationId)?.name || operationId;
+
+      // ID Composto Único para evitar duplicidade no banco
+      const docId = `${selectedEmployeeId}_${date}_${operationId}`;
+      const docRef = doc(db, `artifacts/${appId}/users/${user.uid}/records`, docId);
+
+      if (qty === 0) {
+        await deleteDoc(docRef);
+        addLog(`Produção excluída: Func. '${empName}', Dia ${date}, Operação '${opName}'`);
+      } else {
+        const isEdit = records.some(r => r.id === docId);
+        const oldRecord = records.find(r => r.id === docId);
+
+        await setDoc(docRef, {
+          employeeId: selectedEmployeeId,
+          date,
+          operationId,
+          quantity: qty
         });
 
-        const finalDailyPercentage = totalPercentage;
-
-        if (operationsCount > 0) {
-          weekTotalPercentage += finalDailyPercentage;
-          weekActiveDaysCount++;
-          monthTotalPercentage += finalDailyPercentage;
-          monthActiveDaysCount++;
+        if (isEdit && oldRecord) {
+          addLog(`Produção alterada: Func. '${empName}', Dia ${date}, Operação '${opName}' (De: ${oldRecord.quantity} Para: ${qty})`);
+        } else {
+          addLog(`Produção lançada: Func. '${empName}', Dia ${date}, Operação '${opName}', Qtd: ${qty}`);
         }
+      }
+    };
+
+
+    const calendarData = useMemo(() => {
+      if (!selectedMonth || !selectedEmployeeId) return { weeks: [], monthAverage: 0, monthActiveDays: 0 };
+
+      const monthDate = parseISO(`${selectedMonth}-01`);
+      const start = startOfMonth(monthDate);
+      const end = endOfMonth(monthDate);
+
+      const weeks = eachWeekOfInterval({ start, end }, { weekStartsOn: 1 }); // Monday start
+
+      const employeeRecords = records.filter(r => r.employeeId === selectedEmployeeId);
+
+      let monthTotalPercentage = 0;
+      let monthActiveDaysCount = 0;
+
+      const weeksData = weeks.map(weekStart => {
+        const weekDays = eachDayOfInterval({
+          start: weekStart,
+          end: new Date(weekStart.getTime() + 6 * 24 * 60 * 60 * 1000)
+        });
+
+        let weekTotalPercentage = 0;
+        let weekActiveDaysCount = 0;
+
+        const daysData = weekDays.map(day => {
+          const dateStr = format(day, 'yyyy-MM-dd');
+          const isCurrentMonth = isSameMonth(day, monthDate);
+
+          const dayRecords = employeeRecords.filter(r => r.date === dateStr);
+
+          let totalPercentage = 0;
+          let operationsCount = 0;
+
+          const dayOperationsData = operations.map(op => {
+            const record = dayRecords.find(r => r.operationId === op.id);
+            const qty = record ? record.quantity : 0;
+            const percentage = (qty / op.dailyGoal) * 100;
+
+            if (qty > 0) {
+              totalPercentage += percentage;
+              operationsCount++;
+            }
+
+            return { ...op, quantity: qty, percentage };
+          });
+
+          const finalDailyPercentage = totalPercentage;
+
+          if (operationsCount > 0) {
+            weekTotalPercentage += finalDailyPercentage;
+            weekActiveDaysCount++;
+            monthTotalPercentage += finalDailyPercentage;
+            monthActiveDaysCount++;
+          }
+
+          return {
+            date: day,
+            dateStr,
+            isCurrentMonth,
+            dayName: format(day, 'EEEE', { locale: ptBR }),
+            dayNumber: format(day, 'd'),
+            monthShort: format(day, 'MMM', { locale: ptBR }),
+            operationsData: dayOperationsData,
+            finalDailyPercentage,
+            isActive: operationsCount > 0
+          };
+        });
 
         return {
-          date: day,
-          dateStr,
-          isCurrentMonth,
-          dayName: format(day, 'EEEE', { locale: ptBR }),
-          dayNumber: format(day, 'd'),
-          monthShort: format(day, 'MMM', { locale: ptBR }),
-          operationsData: dayOperationsData,
-          finalDailyPercentage,
-          isActive: operationsCount > 0
+          weekStart,
+          weekNumber: getISOWeek(weekStart),
+          days: daysData,
+          weekAverage: weekActiveDaysCount > 0 ? (weekTotalPercentage / weekActiveDaysCount) : 0
         };
       });
 
       return {
-        weekStart,
-        weekNumber: getISOWeek(weekStart),
-        days: daysData,
-        weekAverage: weekActiveDaysCount > 0 ? (weekTotalPercentage / weekActiveDaysCount) : 0
+        weeks: weeksData,
+        monthAverage: monthActiveDaysCount > 0 ? (monthTotalPercentage / monthActiveDaysCount) : 0,
+        monthActiveDays: monthActiveDaysCount
       };
-    });
+    }, [selectedMonth, selectedEmployeeId, records, operations]);
 
-    return {
-      weeks: weeksData,
-      monthAverage: monthActiveDaysCount > 0 ? (monthTotalPercentage / monthActiveDaysCount) : 0,
-      monthActiveDays: monthActiveDaysCount
-    };
-  }, [selectedMonth, selectedEmployeeId, records, operations]);
+    const selectedEmployee = employees.find(e => e.id === selectedEmployeeId);
 
-  const selectedEmployee = employees.find(e => e.id === selectedEmployeeId);
+    const monthlyReportData = useMemo(() => {
+      if (!selectedMonth) return [];
 
-  const monthlyReportData = useMemo(() => {
-    if (!selectedMonth) return [];
+      return employees.map(emp => {
+        const employeeRecords = records.filter(r => r.employeeId === emp.id && r.date.startsWith(selectedMonth));
 
-    return employees.map(emp => {
-      const employeeRecords = records.filter(r => r.employeeId === emp.id && r.date.startsWith(selectedMonth));
+        let monthTotalPercentage = 0;
+        let monthActiveDaysCount = 0;
+        let totalPieces = 0;
 
-      let monthTotalPercentage = 0;
-      let monthActiveDaysCount = 0;
-      let totalPieces = 0;
+        const recordsByDate = employeeRecords.reduce((acc, record) => {
+          if (!acc[record.date]) acc[record.date] = [];
+          acc[record.date].push(record);
+          totalPieces += record.quantity;
+          return acc;
+        }, {});
 
-      const recordsByDate = employeeRecords.reduce((acc, record) => {
-        if (!acc[record.date]) acc[record.date] = [];
-        acc[record.date].push(record);
-        totalPieces += record.quantity;
-        return acc;
-      }, {});
+        Object.keys(recordsByDate).forEach(date => {
+          const dailyRecords = recordsByDate[date];
+          let dailyTotalPercentage = 0;
+          let hasOperations = false;
 
-      Object.keys(recordsByDate).forEach(date => {
-        const dailyRecords = recordsByDate[date];
-        let dailyTotalPercentage = 0;
-        let hasOperations = false;
+          operations.forEach(op => {
+            const record = dailyRecords.find(r => r.operationId === op.id);
+            const qty = record ? record.quantity : 0;
+            if (qty > 0) {
+              dailyTotalPercentage += (qty / op.dailyGoal) * 100;
+              hasOperations = true;
+            }
+          });
 
-        operations.forEach(op => {
-          const record = dailyRecords.find(r => r.operationId === op.id);
-          const qty = record ? record.quantity : 0;
-          if (qty > 0) {
-            dailyTotalPercentage += (qty / op.dailyGoal) * 100;
-            hasOperations = true;
+          if (hasOperations) {
+            monthTotalPercentage += dailyTotalPercentage;
+            monthActiveDaysCount++;
           }
         });
 
-        if (hasOperations) {
-          monthTotalPercentage += dailyTotalPercentage;
-          monthActiveDaysCount++;
-        }
-      });
+        const average = monthActiveDaysCount > 0 ? (monthTotalPercentage / monthActiveDaysCount) : 0;
 
-      const average = monthActiveDaysCount > 0 ? (monthTotalPercentage / monthActiveDaysCount) : 0;
+        return {
+          ...emp,
+          monthlyAverage: average,
+          activeDays: monthActiveDaysCount,
+          totalPieces
+        };
+      }).sort((a, b) => b.monthlyAverage - a.monthlyAverage);
+    }, [selectedMonth, employees, records, operations]);
 
-      return {
-        ...emp,
-        monthlyAverage: average,
-        activeDays: monthActiveDaysCount,
-        totalPieces
-      };
-    }).sort((a, b) => b.monthlyAverage - a.monthlyAverage);
-  }, [selectedMonth, employees, records, operations]);
+    const individualReportData = useMemo(() => {
+      if (!selectedEmployeeId || !selectedMonth) return null;
+      return calendarData.weeks.map(week => {
+        let totalPieces = 0;
+        let opsSummary = {};
 
-  const individualReportData = useMemo(() => {
-    if (!selectedEmployeeId || !selectedMonth) return null;
-    return calendarData.weeks.map(week => {
-      let totalPieces = 0;
-      let opsSummary = {};
-
-      week.days.forEach(day => {
-        day.operationsData.forEach(op => {
-          if (op.quantity > 0) {
-            if (!opsSummary[op.name]) opsSummary[op.name] = 0;
-            opsSummary[op.name] += op.quantity;
-            totalPieces += op.quantity;
-          }
+        week.days.forEach(day => {
+          day.operationsData.forEach(op => {
+            if (op.quantity > 0) {
+              if (!opsSummary[op.name]) opsSummary[op.name] = 0;
+              opsSummary[op.name] += op.quantity;
+              totalPieces += op.quantity;
+            }
+          });
         });
+
+        return {
+          weekNumber: week.weekNumber,
+          weekStart: week.weekStart,
+          weekAverage: week.weekAverage,
+          totalPieces,
+          opsSummary
+        };
       });
-
-      return {
-        weekNumber: week.weekNumber,
-        weekStart: week.weekStart,
-        weekAverage: week.weekAverage,
-        totalPieces,
-        opsSummary
-      };
-    });
-  }, [calendarData, selectedEmployeeId, selectedMonth]);
+    }, [calendarData, selectedEmployeeId, selectedMonth]);
 
 
-  const handleDownloadPDF = (elementId, fileName) => {
-    addLog(`Geração de PDF solicitada: ${fileName}`);
-    setIsGeneratingPDF(true);
+    const handleDownloadPDF = (elementId, fileName) => {
+      addLog(`Geração de PDF solicitada: ${fileName}`);
+      setIsGeneratingPDF(true);
 
-    const element = document.getElementById(elementId);
+      const element = document.getElementById(elementId);
 
-    const generate = () => {
-      const opt = {
-        margin: 10,
-        filename: fileName,
-        image: { type: 'jpeg', quality: 0.98 },
-        html2canvas: { scale: 2, useCORS: true },
-        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+      const generate = () => {
+        const opt = {
+          margin: 10,
+          filename: fileName,
+          image: { type: 'jpeg', quality: 0.98 },
+          html2canvas: { scale: 2, useCORS: true },
+          jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+        };
+
+        window.html2pdf().set(opt).from(element).save().then(() => {
+          setIsGeneratingPDF(false);
+          addLog(`PDF gerado e baixado com sucesso: ${fileName}`);
+        });
       };
 
-      window.html2pdf().set(opt).from(element).save().then(() => {
-        setIsGeneratingPDF(false);
-        addLog(`PDF gerado e baixado com sucesso: ${fileName}`);
-      });
+      if (window.html2pdf) {
+        generate();
+      } else {
+        const script = document.createElement('script');
+        script.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js';
+        script.onload = generate;
+        document.body.appendChild(script);
+      }
     };
 
-    if (window.html2pdf) {
-      generate();
-    } else {
-      const script = document.createElement('script');
-      script.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js';
-      script.onload = generate;
-      document.body.appendChild(script);
-    }
-  };
+    const handleOtpSubmit = (e) => {
+      e.preventDefault();
+      if (otpInput === '123456') {
+        setAuthStep('login');
+        setAuthError('');
+        addLog('Verificação de IP concluída com sucesso.');
+      } else {
+        setAuthError('Código incorreto. Tente novamente.');
+      }
+    };
 
-  const handleOtpSubmit = (e) => {
-    e.preventDefault();
-    if (otpInput === '123456') {
-      setAuthStep('login');
-      setAuthError('');
-      addLog('Verificação de IP concluída com sucesso.');
-    } else {
-      setAuthError('Código incorreto. Tente novamente.');
-    }
-  };
+    const handleLoginSubmit = (e) => {
+      e.preventDefault();
+      if (passwordInput === 'admin123') {
+        setAuthStep('authenticated');
+        setAuthError('');
+        addLog('Login no sistema realizado com sucesso.');
+      } else {
+        setAuthError('Senha incorreta.');
+      }
+    };
 
-  const handleLoginSubmit = (e) => {
-    e.preventDefault();
-    if (passwordInput === 'admin123') {
-      setAuthStep('authenticated');
-      setAuthError('');
-      addLog('Login no sistema realizado com sucesso.');
-    } else {
-      setAuthError('Senha incorreta.');
-    }
-  };
+    React.useEffect(() => {
+      if (authStep === 'ip-check') {
+        const timer = setTimeout(() => {
+          setAuthStep('otp');
+        }, 2000);
+        return () => clearTimeout(timer);
+      }
+    }, [authStep]);
 
-  React.useEffect(() => {
-    if (authStep === 'ip-check') {
-      const timer = setTimeout(() => {
-        setAuthStep('otp');
-      }, 2000);
-      return () => clearTimeout(timer);
-    }
-  }, [authStep]);
-
-  if (authStep !== 'authenticated') {
-    return (
-      <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4">
-        <div className="bg-white max-w-md w-full rounded-2xl shadow-xl p-8 border border-slate-200">
-          <div className="flex justify-center mb-6">
-            <div className="h-16 w-16 bg-blue-100 rounded-full flex items-center justify-center text-blue-600">
-              {authStep === 'ip-check' && <Activity size={32} className="animate-pulse" />}
-              {authStep === 'otp' && <Mail size={32} />}
-              {authStep === 'login' && <Lock size={32} />}
-            </div>
-          </div>
-          <h2 className="text-2xl font-bold text-center text-slate-800 mb-2">
-            {authStep === 'ip-check' && 'Verificando Conexão...'}
-            {authStep === 'otp' && 'Novo Dispositivo Detectado'}
-            {authStep === 'login' && 'Acesso Restrito'}
-          </h2>
-          <p className="text-center text-slate-500 mb-8 text-sm">
-            {authStep === 'ip-check' && 'Analisando geolocalização e IP do dispositivo...'}
-            {authStep === 'otp' && 'Enviamos um código de 6 dígitos para o e-mail do administrador. (Dica: 123456)'}
-            {authStep === 'login' && 'Digite sua senha mestre para acessar o painel. (Dica: admin123)'}
-          </p>
-          {authError && (
-            <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg flex items-center gap-2 text-red-600 text-sm font-medium">
-              <AlertTriangle size={16} /> {authError}
-            </div>
-          )}
-          {authStep === 'ip-check' && (
-            <div className="flex justify-center py-8">
-              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-            </div>
-          )}
-          {authStep === 'otp' && (
-            <form onSubmit={handleOtpSubmit} className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Código de Autorização (OTP)</label>
-                <input
-                  type="text" maxLength="6" autoFocus required value={otpInput}
-                  onChange={e => setOtpInput(e.target.value.replace(/\D/g, ''))}
-                  className="w-full p-3 text-center text-2xl tracking-widest border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none font-bold"
-                  placeholder="000000"
-                />
+    if (authStep !== 'authenticated') {
+      return (
+        <div className="min-h-screen bg-slate-100 flex items-center justify-center p-4">
+          <div className="bg-white max-w-md w-full rounded-2xl shadow-xl p-8 border border-slate-200">
+            <div className="flex justify-center mb-6">
+              <div className="h-16 w-16 bg-blue-100 rounded-full flex items-center justify-center text-blue-600">
+                {authStep === 'ip-check' && <Activity size={32} className="animate-pulse" />}
+                {authStep === 'otp' && <Mail size={32} />}
+                {authStep === 'login' && <Lock size={32} />}
               </div>
-              <button type="submit" className="w-full py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-bold flex justify-center items-center gap-2">
-                <ShieldCheck size={18} /> Validar Dispositivo
-              </button>
-            </form>
-          )}
-          {authStep === 'login' && (
-            <form onSubmit={handleLoginSubmit} className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Senha do Sistema</label>
-                <div className="relative">
-                  <Key size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            </div>
+            <h2 className="text-2xl font-bold text-center text-slate-800 mb-2">
+              {authStep === 'ip-check' && 'Verificando Conexão...'}
+              {authStep === 'otp' && 'Novo Dispositivo Detectado'}
+              {authStep === 'login' && 'Acesso Restrito'}
+            </h2>
+            <p className="text-center text-slate-500 mb-8 text-sm">
+              {authStep === 'ip-check' && 'Analisando geolocalização e IP do dispositivo...'}
+              {authStep === 'otp' && 'Enviamos um código de 6 dígitos para o e-mail do administrador. (Dica: 123456)'}
+              {authStep === 'login' && 'Digite sua senha mestre para acessar o painel. (Dica: admin123)'}
+            </p>
+            {authError && (
+              <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg flex items-center gap-2 text-red-600 text-sm font-medium">
+                <AlertTriangle size={16} /> {authError}
+              </div>
+            )}
+            {authStep === 'ip-check' && (
+              <div className="flex justify-center py-8">
+                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+              </div>
+            )}
+            {authStep === 'otp' && (
+              <form onSubmit={handleOtpSubmit} className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Código de Autorização (OTP)</label>
                   <input
-                    type="password" autoFocus required value={passwordInput}
-                    onChange={e => setPasswordInput(e.target.value)}
-                    className="w-full pl-10 p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
-                    placeholder="••••••••"
+                    type="text" maxLength="6" autoFocus required value={otpInput}
+                    onChange={e => setOtpInput(e.target.value.replace(/\D/g, ''))}
+                    className="w-full p-3 text-center text-2xl tracking-widest border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none font-bold"
+                    placeholder="000000"
                   />
                 </div>
-              </div>
-              <button type="submit" className="w-full py-3 bg-slate-800 text-white rounded-lg hover:bg-slate-900 transition-colors font-bold">
-                Entrar no Dashboard
-              </button>
-            </form>
-          )}
+                <button type="submit" className="w-full py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-bold flex justify-center items-center gap-2">
+                  <ShieldCheck size={18} /> Validar Dispositivo
+                </button>
+              </form>
+            )}
+            {authStep === 'login' && (
+              <form onSubmit={handleLoginSubmit} className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Senha do Sistema</label>
+                  <div className="relative">
+                    <Key size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <input
+                      type="password" autoFocus required value={passwordInput}
+                      onChange={e => setPasswordInput(e.target.value)}
+                      className="w-full pl-10 p-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+                      placeholder="••••••••"
+                    />
+                  </div>
+                </div>
+                <button type="submit" className="w-full py-3 bg-slate-800 text-white rounded-lg hover:bg-slate-900 transition-colors font-bold">
+                  Entrar no Dashboard
+                </button>
+              </form>
+            )}
+          </div>
         </div>
-      </div>
-    );
+      );
+    }
   }
 
   return (
